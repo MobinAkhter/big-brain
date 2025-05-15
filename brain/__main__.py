@@ -1,86 +1,66 @@
 # brain/__main__.py
-import sys, pathlib, threading
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
-from PySide6.QtGui import QIcon, QAction, QCursor
-from .gui import AddNote, Ask
+import sys
+import pathlib
 
 # ─────────────────────────────────────────────
-# Qt application and tray
+# Initialize Qt first
 # ─────────────────────────────────────────────
-app = QApplication(sys.argv)
+from PySide6.QtWidgets import QApplication
 
-icon_path = pathlib.Path(__file__).resolve().parent.parent / "icons" / "brain.icns"
-icon = (
-    QIcon(str(icon_path))
-    if icon_path.exists()
-    else app.style().standardIcon(app.style().SP_MessageBoxInformation)
-)
-
-tray = QSystemTrayIcon(icon)
-menu = QMenu()
-
-add_win = AddNote(tray)   # need tray for toast messages
-ask_win = Ask()
-
-menu.addAction(QAction("New note", triggered=add_win.show))
-menu.addAction(QAction("Ask", triggered=ask_win.show))
-menu.addSeparator()
-menu.addAction(QAction("Quit", triggered=app.quit))
-
-tray.setContextMenu(menu)
-tray.setToolTip("Second Brain")
-
-def on_tray_activated(reason):
-    if reason == QSystemTrayIcon.Trigger:      # left‑click
-        add_win.show()
-    elif reason == QSystemTrayIcon.Context:    # right‑click
-        menu.exec(QCursor.pos())
-
-tray.activated.connect(on_tray_activated)
+# Create a single QApplication before any QWidget is built
+_qt_app = QApplication(sys.argv)
 
 # ─────────────────────────────────────────────
-# Custom global‑shortcut listener (pynput, caps‑lock‑safe)
+# Now import the rest
 # ─────────────────────────────────────────────
-def start_hotkeys():
-    try:
-        from pynput import keyboard
-    except ImportError:
-        tray.showMessage(
-            "Second Brain",
-            "Global shortcuts disabled – install the 'pynput' package",
-            QSystemTrayIcon.Warning,
-            6000,
+import rumps
+from brain.gui import AddNote, Ask, BrowseNotes
+
+# ─────────────────────────────────────────────
+# Locate icon
+# ─────────────────────────────────────────────
+ICO = pathlib.Path(__file__).resolve().parent.parent / "icons" / "brain.icns"
+ICON = str(ICO) if ICO.exists() else None
+
+# ─────────────────────────────────────────────
+# Menubar app
+# ─────────────────────────────────────────────
+class SecondBrainApp(rumps.App):
+    def __init__(self):
+        super().__init__(
+            name="Second Brain",
+            icon=ICON,
+            menu=[
+                "New note",
+                "Ask",
+                "Browse notes",
+                None,
+                "Quit",
+            ],
         )
-        return
+        # Now it's safe to create Qt windows
+        self.add_win    = AddNote(self)
+        self.ask_win    = Ask()
+        self.browse_win = BrowseNotes(self)
 
-    # Map combos to actions
-    hotkeys = {
-        frozenset([keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode.from_char("n")]): add_win.show,
-        frozenset([keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode.from_char("f")]): ask_win.show,
-    }
+    @rumps.clicked("New note")
+    def on_new(self, _):
+        self.add_win.show()
 
-    pressed = set()
+    @rumps.clicked("Ask")
+    def on_ask(self, _):
+        self.ask_win.show()
 
-    def on_press(key):
-        # Ignore Caps Lock entirely to avoid the macOS bug
-        if key == keyboard.Key.caps_lock:
-            return
-        pressed.add(key)
-        for combo, action in hotkeys.items():
-            if combo <= pressed:
-                action()
+    @rumps.clicked("Browse notes")
+    def on_browse(self, _):
+        self.browse_win.show()
 
-    def on_release(key):
-        if key == keyboard.Key.caps_lock:
-            return
-        pressed.discard(key)
-
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.daemon = True   # exit cleanly with the app
-    listener.start()
-
-threading.Thread(target=start_hotkeys, daemon=True).start()
+    @rumps.clicked("Quit")
+    def on_quit(self, _):
+        rumps.quit_application()
 
 # ─────────────────────────────────────────────
-tray.show()
-sys.exit(app.exec())
+# Entry point
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    SecondBrainApp().run()

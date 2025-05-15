@@ -4,18 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ad7d6e7d-bf63-4af9-8ad9-268aeedbba3f" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/second-brain.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/brain/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/brain/__main__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/brain/gui.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/brain/llm.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/brain/storage.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/icons/brain.icns" afterDir="false" />
+    <list default="true" id="ad7d6e7d-bf63-4af9-8ad9-268aeedbba3f" name="Changes" comment="save notes work lets gooo">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/brain/__main__.py" beforeDir="false" afterPath="$PROJECT_DIR$/brain/__main__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/brain/gui.py" beforeDir="false" afterPath="$PROJECT_DIR$/brain/gui.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/brain/llm.py" beforeDir="false" afterPath="$PROJECT_DIR$/brain/llm.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/brain/storage.py" beforeDir="false" afterPath="$PROJECT_DIR$/brain/storage.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -75,16 +69,16 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
-      <option name="SCRIPT_NAME" value="brain" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/brain/__main__.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="true" />
+      <option name="MODULE_MODE" value="false" />
       <option name="REDIRECT_INPUT" value="false" />
       <option name="INPUT_FILE" value="" />
       <method v="2" />
@@ -99,15 +93,28 @@
       <updated>1747190066717</updated>
       <workItem from="1747190067763" duration="832000" />
       <workItem from="1747190903522" duration="1661000" />
-      <workItem from="1747192598397" duration="5301000" />
+      <workItem from="1747192598397" duration="11454000" />
     </task>
+    <task id="LOCAL-00001" summary="save notes work lets gooo">
+      <option name="closed" value="true" />
+      <created>1747320003935</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1747320003935</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="save notes work lets gooo" />
+    <option name="LAST_COMMIT_MESSAGE" value="save notes work lets gooo" />
+  </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/second_brain$__main__.coverage" NAME="__main__ Coverage Results" MODIFIED="1747190476828" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/brain" />
-    <SUITE FILE_PATH="coverage/second_brain$Second_Brain.coverage" NAME="Second Brain Coverage Results" MODIFIED="1747319688932" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
+    <SUITE FILE_PATH="coverage/second_brain$Second_Brain.coverage" NAME="Second Brain Coverage Results" MODIFIED="1747329632583" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
