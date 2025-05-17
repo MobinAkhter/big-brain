@@ -1,34 +1,25 @@
-# brain/llm.py
-import threading
-from ctransformers import AutoModelForCausalLM
-import requests, json
+import requests
 
-# ───────────────────────────────────────────
-# Quantized GGUF model via ctransformers
-# ───────────────────────────────────────────
-# Place your Q4_0 GGUF llama3 model at models/llama3-8b-q4_0.gguf
-_llm = AutoModelForCausalLM.from_pretrained(
-    model="models/llama3-8b-q4_0.gguf",
-    model_type="llama",
-    library="ctransformers",
-    device="mps",
-    n_ctx=2048,
-)
-_llm.generate_kwargs = {"max_new_tokens": 256, "temperature":0.7}
-
-# ───────────────────────────────────────────
-# Embedding via Ollama’s API
-# ───────────────────────────────────────────
 OLLAMA = "http://localhost:11434"
 
+def _post_json(path, payload):
+    r = requests.post(f"{OLLAMA}{path}", json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
 def embed(text: str) -> list[float]:
-    r = requests.post(
-        f"{OLLAMA}/api/embed",
-        json={"model": "mxbai-embed-large", "prompt": text}
+    data = _post_json(
+        "/api/embeddings",
+        {"model": "mxbai-embed-large", "prompt": text}
     )
-    data = r.json()
-    return data["embedding"]
+    # Ollama returns either {"embedding":[...]} or {"data":[...]}
+    return data.get("embedding") or data.get("data") or []
 
 def chat(prompt: str) -> str:
-    # run in blocking call; we’ll offload to a thread later
-    return _llm.generate(prompt)
+    data = _post_json(
+        "/api/chat",
+        {"model": "llama3:8b",
+         "messages": [{"role": "user", "content": prompt}],
+         "stream": False}
+    )
+    return data.get("message", {}).get("content", "")
