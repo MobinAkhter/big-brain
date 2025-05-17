@@ -1,4 +1,3 @@
-# brain/storage.py
 import sqlite3
 import time
 import pathlib
@@ -15,59 +14,60 @@ DB = APP / "second_brain.db"
 
 local_storage = threading.local()
 
-
 def get_conn():
     if not hasattr(local_storage, 'conn'):
         local_storage.conn = sqlite3.connect(DB)
     return local_storage.conn
 
-
+# Create tables if they don't exist
 get_conn().execute(
     "CREATE TABLE IF NOT EXISTS notes("
     "id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "parent_id INTEGER,"
     "body TEXT NOT NULL,"
     "ts REAL NOT NULL,"
-    "emb BLOB)"
+    "emb BLOB,"
+    "tags TEXT DEFAULT '')"
 )
 
 get_conn().execute("CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(body, content='notes', content_rowid='id')")
 
+# Triggers for FTS5
 get_conn().execute("""
-                   CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes
-                   BEGIN
-                   INSERT INTO notes_fts(rowid, body)
-                   VALUES (new.id, new.body);
-                   END;
-                   """)
+CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes
+BEGIN
+  INSERT INTO notes_fts(rowid, body) VALUES (new.id, new.body);
+END;
+""")
 
 get_conn().execute("""
-                   CREATE TRIGGER IF NOT EXISTS notes_ad AFTER
-                   DELETE
-                   ON notes
-                   BEGIN
-                   INSERT INTO notes_fts(notes_fts, rowid, body)
-                   VALUES ('delete', old.id, old.body);
-                   END;
-                   """)
+CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes
+BEGIN
+  INSERT INTO notes_fts(notes_fts, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+""")
 
 get_conn().execute("""
-                   CREATE TRIGGER IF NOT EXISTS notes_au AFTER
-                   UPDATE ON notes
-                   BEGIN
-                   INSERT INTO notes_fts(notes_fts, rowid, body)
-                   VALUES ('delete', old.id, old.body);
-                   INSERT INTO notes_fts(rowid, body)
-                   VALUES (new.id, new.body);
-                   END;
-                   """)
+CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes
+BEGIN
+  INSERT INTO notes_fts(notes_fts, rowid, body) VALUES ('delete', old.id, old.body);
+  INSERT INTO notes_fts(rowid, body) VALUES (new.id, new.body);
+END;
+""")
 
+# Populate FTS table if empty
 if get_conn().execute("SELECT COUNT(*) FROM notes_fts").fetchone()[0] == 0:
     get_conn().execute("INSERT INTO notes_fts(rowid, body) SELECT id, body FROM notes")
 
+# Ensure 'tags' column exists (for backward compatibility)
+cursor = get_conn().execute("PRAGMA table_info(notes)")
+columns = [row[1] for row in cursor.fetchall()]
+if 'tags' not in columns:
+    get_conn().execute("ALTER TABLE notes ADD COLUMN tags TEXT DEFAULT ''")
+    get_conn().commit()
+
 _index = None
 _DIM = 0
-
 
 def _ensure_index(dim: int):
     global _index, _DIM
@@ -75,7 +75,7 @@ def _ensure_index(dim: int):
         _DIM = dim
         idx = hnswlib.Index(space="ip", dim=_DIM)
         idx.init_index(max_elements=100_000, ef_construction=200, M=32)
-        idx.set_ef(100)
+        idx/accounts/100
         rows = get_conn().execute("SELECT id, emb FROM notes WHERE emb IS NOT NULL").fetchall()
         for nid, blob in rows:
             if isinstance(blob, (bytes, bytearray)) and len(blob) == _DIM * 4:
@@ -83,12 +83,10 @@ def _ensure_index(dim: int):
                 idx.add_items(vec.reshape(1, -1), [nid])
         _index = idx
 
-
 def _normalize(text: str) -> str:
     text = text.lower()
     text = re.sub(r'[^\w\s]', '', text)
     return text
-
 
 def _chunk(text, max_words=100):
     words = text.split()
@@ -98,8 +96,7 @@ def _chunk(text, max_words=100):
         for i in range(0, len(words), max_words):
             yield " ".join(words[i:i + max_words])
 
-
-def add(body: str):
+def add(body: str, tags: str = ""):
     from .llm import embed
     ts = time.time()
     parent = None
@@ -111,14 +108,33 @@ def add(body: str):
         _ensure_index(vec.size)
         blob = vec.tobytes()
         cur = get_conn().execute(
-            "INSERT INTO notes(parent_id, body, ts, emb) VALUES(?,?,?,?)",
-            (parent, chunk, ts, blob))
+            "INSERT INTO notes(parent_id, body, ts, emb, tags) VALUES(?,?,?,?,?)",
+            (parent, chunk, ts, blob, tags))
         nid = cur.lastrowid
         if parent is None:
             parent = nid
         get_conn().commit()
         _index.add_items(vec.reshape(1, -1), [nid])
 
+def update_note(nid: int, body: str, tags: str = ""):
+    from .llm import embed
+    ts = time.time()
+    normalized_body = _normalize(body)
+    vec = np.array(embed(normalized_body), dtype="float32")
+    _ensure_index(vec.size)
+    blob = vec.tobytes()
+    get_conn().execute(
+        "UPDATE notes SET body=?, ts=?, emb=?, tags=? WHERE id=?",
+        (body, ts, blob, tags, nid)
+    )
+    get_conn().commit()
+    if _index:
+        _index.mark_deleted(nid)
+        _index.add_items(vec.reshape(1, -1), [nid])
+
+def get_note(nid):
+    row = get_conn().execute("SELECT body, tags FROM notes WHERE id=?", (nid,)).fetchone()
+    return {"body": row[0], "tags": row[1]} if row else None
 
 @lru_cache(maxsize=128)
 def _embed(text: str) -> np.ndarray:
@@ -126,58 +142,82 @@ def _embed(text: str) -> np.ndarray:
     normalized_text = _normalize(text)
     return np.array(embed(normalized_text), dtype="float32")
 
-
 @lru_cache(maxsize=64)
 def topk(query: str, k: int = 4):
-    if _index is None or _index.get_current_count() == 0:
-        normalized_query = _normalize(query)
-        if normalized_query:
-            fts_query = normalized_query
-            fts_ids = get_conn().execute("SELECT rowid FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?",
-                                         (fts_query, k)).fetchall()
-            fts_ids = set(row[0] for row in fts_ids)
-        else:
-            fts_ids = set()
-        if not fts_ids:
-            return []
-        placeholders = ','.join('?' * len(fts_ids))
-        rows = get_conn().execute(f"SELECT id, body FROM notes WHERE id IN ({placeholders})", list(fts_ids)).fetchall()
-        return rows[:k]
-
     normalized_query = _normalize(query)
+    fts_query = ' '.join([f"{word}*" for word in normalized_query.split()])  # Enable prefix matching for fuzziness
 
-    emb_ids = set()
-    try:
-        vec = _embed(query)
-        if vec.size == _DIM:
-            k_emb = min(k, _index.get_current_count())
-            emb_ids, _ = _index.knn_query(vec, k=k_emb)
-            emb_ids = set(emb_ids[0])
-    except RuntimeError:
-        pass
+    emb_results = {}
+    if _index is not None and _index.get_current_count() > 0:
+        try:
+            vec = _embed(query)
+            if vec.size == _DIM:
+                k_emb = min(k, _index.get_current_count())
+                labels, distances = _index.knn_query(vec, k=k_emb)
+                similarities = -distances[0]  # Higher is better for inner product
+                if len(similarities) > 0:
+                    min_sim = np.min(similarities)
+                    max_sim = np.max(similarities)
+                    if max_sim > min_sim:
+                        sim_emb_norm = (similarities - min_sim) / (max_sim - min_sim)
+                    else:
+                        sim_emb_norm = np.ones_like(similarities)
+                    emb_results = {int(label): score for label, score in zip(labels[0], sim_emb_norm)}
+        except RuntimeError:
+            pass
 
-    fts_ids = set()
-    if normalized_query:
-        fts_query = normalized_query
-        fts_ids = get_conn().execute("SELECT rowid FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?",
-                                     (fts_query, k)).fetchall()
-        fts_ids = set(row[0] for row in fts_ids)
+    fts_results = {}
+    if fts_query:
+        fts_rows = get_conn().execute(
+            "SELECT rowid, rank FROM notes_fts WHERE notes_fts MATCH ? ORDER BY rank LIMIT ?",
+            (fts_query, k)
+        ).fetchall()
+        if fts_rows:
+            rowids, ranks = zip(*fts_rows)
+            similarities = -np.array(ranks)  # Higher is better (more negative rank is better match)
+            min_sim = np.min(similarities)
+            max_sim = np.max(similarities)
+            if max_sim > min_sim:
+                sim_fts_norm = (similarities - min_sim) / (max_sim - min_sim)
+            else:
+                sim_fts_norm = np.ones_like(similarities)
+            fts_results = {int(rowid): score for rowid, score in zip(rowids, sim_fts_norm)}
 
-    all_ids = emb_ids.union(fts_ids)
+    all_ids = set(emb_results.keys()).union(set(fts_results.keys()))
     if not all_ids:
         return []
 
-    placeholders = ','.join('?' * len(all_ids))
-    rows = get_conn().execute(f"SELECT id, body FROM notes WHERE id IN ({placeholders})", list(all_ids)).fetchall()
-    return rows[:k]
+    scores = {}
+    for nid in all_ids:
+        emb_score = emb_results.get(nid, 0)
+        fts_score = fts_results.get(nid, 0)
+        scores[nid] = emb_score + fts_score
 
+    sorted_ids = sorted(all_ids, key=lambda x: scores[x], reverse=True)
+
+    placeholders = ','.join('?' * len(sorted_ids))
+    rows = get_conn().execute(
+        f"SELECT id, body FROM notes WHERE id IN ({placeholders})",
+        list(sorted_ids)
+    ).fetchall()
+
+    id_to_row = {row[0]: row for row in rows}
+    sorted_rows = [id_to_row[nid] for nid in sorted_ids if nid in id_to_row]
+
+    return sorted_rows[:k]
 
 def all_notes():
-    return get_conn().execute("SELECT id, parent_id, ts, body FROM notes ORDER BY ts DESC").fetchall()
-
+    return get_conn().execute("SELECT id, parent_id, ts, body, tags FROM notes ORDER BY ts DESC").fetchall()
 
 def delete(nid: int):
     if _index:
         _index.mark_deleted(nid)
     get_conn().execute("DELETE FROM notes WHERE id=?", (nid,))
     get_conn().commit()
+
+def export_notes():
+    rows = get_conn().execute("SELECT id, parent_id, ts, body, tags FROM notes").fetchall()
+    return [
+        {"id": nid, "parent_id": pid, "timestamp": ts, "body": body, "tags": tags}
+        for nid, pid, ts, body, tags in rows
+    ]

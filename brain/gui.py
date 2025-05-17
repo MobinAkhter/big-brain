@@ -1,19 +1,23 @@
 from datetime import datetime
 import re
+import json
+import shutil
 from PySide6.QtWidgets import (
-    QWidget, QTextEdit, QTextBrowser, QVBoxLayout, QLineEdit, QPushButton,
-    QHBoxLayout, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QMessageBox,
+    QDialog, QWidget, QTextEdit, QTextBrowser, QVBoxLayout, QLineEdit, QPushButton,
+    QHBoxLayout, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QMessageBox, QFileDialog
 )
-from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QKeySequence
 
-from .storage import add, topk, all_notes, delete
+from .storage import add, topk, all_notes, delete, get_note, update_note, export_notes
 from .llm import chat
+
 
 class NoteTextEdit(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
+
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Save):
             self.parent._save_note()
@@ -21,6 +25,7 @@ class NoteTextEdit(QTextEdit):
             self.parent.close()
         else:
             super().keyPressEvent(event)
+
 
 class AddNote(QWidget):
     def __init__(self, tray):
@@ -30,7 +35,9 @@ class AddNote(QWidget):
         self.setFixedSize(QSize(480, 300))
 
         self.text = NoteTextEdit(self)
-        self.text.setPlaceholderText("Paste or type any snippet…")
+        self.text.setPlaceholderText("Paste or type any snippet… (e.g., See [5] for details)")
+
+        self.tags_input = QLineEdit(placeholderText="Tags (comma-separated)")
 
         save_btn = QPushButton("Save (⌘S)")
         close_btn = QPushButton("Close")
@@ -44,43 +51,101 @@ class AddNote(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.text)
+        layout.addWidget(self.tags_input)
         layout.addLayout(btn_row)
 
     def _save_note(self):
         body = self.text.toPlainText().strip()
-        if not body:
-            return
-        add(body)
-        if hasattr(self.tray, "showMessage"):
-            self.tray.showMessage("Second Brain", "Note saved ✔", QSystemTrayIcon.Information, 2000)
-        else:
-            import rumps
-            rumps.notification("Second Brain", "", "Note saved ✔")
-        self.text.clear()
-        self.text.setFocus()
+        tags_input = self.tags_input.text().strip()
+        tags = ','.join(tag.strip() for tag in tags_input.split(',') if tag.strip())
+        if body:
+            add(body, tags)
+            if hasattr(self.tray, "showMessage"):
+                self.tray.showMessage("Second Brain", "Note saved ✔", QSystemTrayIcon.Information, 2000)
+            else:
+                import rumps
+                rumps.notification("Second Brain", "", "Note saved ✔")
+            self.text.clear()
+            self.tags_input.clear()
+            self.text.setFocus()
 
     def show(self):
         super().show()
         self.text.setFocus()
 
+
+class EditNote(QWidget):
+    def __init__(self, tray, nid):
+        super().__init__()
+        self.tray = tray
+        self.nid = nid
+        self.setWindowTitle(f"Edit Note {nid}")
+        self.setFixedSize(QSize(480, 300))
+
+        self.text = NoteTextEdit(self)
+        self.text.setPlaceholderText("Paste or type any snippet… (e.g., See [5] for details)")
+
+        self.tags_input = QLineEdit(placeholderText="Tags (comma-separated)")
+
+        save_btn = QPushButton("Save (⌘S)")
+        close_btn = QPushButton("Close")
+        save_btn.clicked.connect(self._save_note)
+        close_btn.clicked.connect(self.close)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(close_btn)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.text)
+        layout.addWidget(self.tags_input)
+        layout.addLayout(btn_row)
+
+        # Load existing note data
+        note = get_note(nid)
+        if note:
+            self.text.setPlainText(note["body"])
+            self.tags_input.setText(note["tags"])
+
+    def _save_note(self):
+        body = self.text.toPlainText().strip()
+        tags_input = self.tags_input.text().strip()
+        tags = ','.join(tag.strip() for tag in tags_input.split(',') if tag.strip())
+        if body:
+            update_note(self.nid, body, tags)
+            if hasattr(self.tray, "showMessage"):
+                self.tray.showMessage("Second Brain", f"Note {self.nid} updated ✔", QSystemTrayIcon.Information, 2000)
+            else:
+                import rumps
+                rumps.notification("Second Brain", "", f"Note {self.nid} updated ✔")
+            self.close()
+
+    def show(self):
+        super().show()
+        self.text.setFocus()
+
+
 class Ask(QWidget):
     class Worker(QThread):
         result = Signal(str, list)
+
         def __init__(self, q):
             super().__init__()
             self.q = q
+
         def run(self):
             ctx = topk(self.q, k=6)
             if not ctx:
                 self.result.emit("I don't have that information in my notes.", [])
                 return
-            ctx_block = "\n".join(f"[{i}] {b}" for i, b in ctx)
+            ctx_block = "\n".join(f"[{nid}] {b}" for nid, b in ctx)
             prompt = (
-                "Here are my notes:\n" + ctx_block + "\n\n"
-                "Using ONLY these notes, answer the question below. "
-                "If the answer is not contained in the notes, respond 'I don't know.' "
-                "Cite any notes used by their number.\n\n"
-                f"Question: {self.q}\nAnswer:"
+                    "Here are my notes:\n" + ctx_block + "\n\n"
+                                                         "Using ONLY these notes, answer the question below. "
+                                                         "If the answer is not contained in the notes, respond 'I don't know.' "
+                                                         "Cite any notes used by their number in square brackets, like [nid].\n\n"
+                                                         f"Question: {self.q}\nAnswer:"
             )
             self.result.emit(chat(prompt), ctx)
 
@@ -118,7 +183,7 @@ class Ask(QWidget):
 
     def _show(self, ans, ctx):
         self.spinner.hide()
-        self._ctx = {i: b for i, b in ctx}
+        self._ctx = {nid: b for nid, b in ctx}
         html = re.sub(r"\[(\d+)]", lambda m: f'<a href="{m.group(1)}">[{m.group(1)}]</a>', ans)
         self.answer.setHtml(html)
         self.query.setEnabled(True)
@@ -127,15 +192,13 @@ class Ask(QWidget):
     def _popup(self, url):
         nid = int(url.toString())
         body = self._ctx.get(nid, "Note not found.")
-        box = QMessageBox(self)
-        box.setWindowTitle(f"Note {nid}")
-        box.setText(body)
-        box.show()
-        QTimer.singleShot(20000, box.accept)
+        viewer = NoteViewer(nid, body=body, parent=self)
+        viewer.show()
 
     def show(self):
         super().show()
         self.query.setFocus()
+
 
 class BrowseNotes(QWidget):
     def __init__(self, tray):
@@ -144,18 +207,29 @@ class BrowseNotes(QWidget):
         self.setWindowTitle("Browse notes")
         self.setFixedSize(QSize(700, 480))
 
-        self.filter = QLineEdit(placeholderText="Filter…")
-        self.table = QTableWidget(columnCount=3)
-        self.table.setHorizontalHeaderLabels(["ID", "Snippet", ""])
+        self.text_filter = QLineEdit(placeholderText="Filter by text…")
+        self.tag_filter = QLineEdit(placeholderText="Filter by tags (comma-separated)…")
+
+        export_btn = QPushButton("Backup/Export")
+        export_btn.clicked.connect(self._export)
+
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.text_filter)
+        filter_layout.addWidget(self.tag_filter)
+        filter_layout.addWidget(export_btn)
+
+        self.table = QTableWidget(columnCount=5)
+        self.table.setHorizontalHeaderLabels(["ID", "Tags", "Snippet", "", ""])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().hide()
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.filter)
+        layout.addLayout(filter_layout)
         layout.addWidget(self.table)
 
-        self.filter.textChanged.connect(self.refresh)
+        self.text_filter.textChanged.connect(self.refresh)
+        self.tag_filter.textChanged.connect(self.refresh)
         self.table.keyPressEvent = self._table_keys
         self._notes = []
         self.refresh()
@@ -167,26 +241,37 @@ class BrowseNotes(QWidget):
             self._delete(int(self.table.item(row, 0).text()))
         elif key in (Qt.Key_Enter, Qt.Key_Return) and row >= 0:
             nid = int(self.table.item(row, 0).text())
-            body = next(b for i, _, _, b in self._notes if i == nid)
-            QMessageBox.information(self, f"Note {nid}", body)
+            viewer = NoteViewer(nid, parent=self)
+            viewer.show()
         else:
             super(QTableWidget, self.table).keyPressEvent(event)
 
     def refresh(self):
-        txt = self.filter.text().lower()
+        txt = self.text_filter.text().lower()
+        tag_filter = self.tag_filter.text().lower()
         self._notes = all_notes()
         if txt:
-            self._notes = [r for r in self._notes if txt in r[3].lower()]
+            self._notes = [r for r in self._notes if txt in r[3].lower()]  # body
+        if tag_filter:
+            tags = [tag.strip() for tag in tag_filter.split(',')]
+            self._notes = [r for r in self._notes if all(tag in r[4].lower() for tag in tags)]  # tags
         self.table.setRowCount(len(self._notes))
-        for row, (nid, _, ts, body) in enumerate(self._notes):
+        for row, (nid, _, ts, body, tags) in enumerate(self._notes):
             ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
             snippet = body.replace("\n", " ")[:80]
+            snippet_item = QTableWidgetItem(f"{ts_str} — {snippet}")
+            snippet_item.setData(Qt.UserRole, body)
             self.table.setItem(row, 0, QTableWidgetItem(str(nid)))
-            self.table.setItem(row, 1, QTableWidgetItem(f"{ts_str} — {snippet}"))
-            btn = QPushButton("✖")
-            btn.setFixedWidth(28)
-            btn.clicked.connect(lambda _, id=nid: self._delete(id))
-            self.table.setCellWidget(row, 2, btn)
+            self.table.setItem(row, 1, QTableWidgetItem(tags))
+            self.table.setItem(row, 2, snippet_item)
+            del_btn = QPushButton("✖")
+            del_btn.setFixedWidth(28)
+            del_btn.clicked.connect(lambda _, id=nid: self._delete(id))
+            self.table.setCellWidget(row, 3, del_btn)
+            edit_btn = QPushButton("✎")
+            edit_btn.setFixedWidth(28)
+            edit_btn.clicked.connect(lambda _, id=nid: self._edit(id))
+            self.table.setCellWidget(row, 4, edit_btn)
         self.table.resizeColumnsToContents()
         if self._notes:
             self.table.selectRow(0)
@@ -200,27 +285,48 @@ class BrowseNotes(QWidget):
             rumps.notification("Second Brain", "", f"Note {nid} deleted")
         self.refresh()
 
-import requests
+    def _edit(self, nid):
+        editor = EditNote(self.tray, nid)
+        editor.show()
+        editor.closed.connect(self.refresh)  # Refresh table after editing
 
-OLLAMA = "http://localhost:11434"
+    def _export(self):
+        options = QFileDialog.Options()
+        file_name, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Backup or Export Notes",
+            "",
+            "SQLite Database (*.db);;JSON File (*.json)",
+            options=options
+        )
+        if file_name:
+            if selected_filter == "SQLite Database (*.db)":
+                shutil.copy(str(DB), file_name)
+                self.tray.showMessage("Second Brain", "Database backed up ✔", QSystemTrayIcon.Information, 2000)
+            elif selected_filter == "JSON File (*.json)":
+                notes = export_notes()
+                with open(file_name, 'w') as f:
+                    json.dump(notes, f, indent=2)
+                self.tray.showMessage("Second Brain", "Notes exported to JSON ✔", QSystemTrayIcon.Information, 2000)
 
-def _post_json(path, payload):
-    r = requests.post(f"{OLLAMA}{path}", json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()
 
-def embed(text: str) -> list[float]:
-    data = _post_json(
-        "/api/embeddings",
-        {"model": "mxbai-embed-large", "prompt": text}
-    )
-    return data.get("embedding") or data.get("data") or []
+class NoteViewer(QDialog):
+    def __init__(self, nid, body=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Note {nid}")
+        self.setFixedSize(400, 300)
+        self.text = QTextBrowser()
+        self.text.setOpenLinks(False)
+        self.text.anchorClicked.connect(self._handle_link)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.text)
+        if body is None:
+            note = get_note(nid)
+            body = note["body"] if note else "Note not found."
+        html = re.sub(r"\[(\d+)]", lambda m: f'<a href="{m.group(1)}">[{m.group(1)}]</a>', body)
+        self.text.setHtml(html)
 
-def chat(prompt: str) -> str:
-    data = _post_json(
-        "/api/chat",
-        {"model": "llama3:8b",
-         "messages": [{"role": "user", "content": prompt}],
-         "stream": False}
-    )
-    return data.get("message", {}).get("content", "")
+    def _handle_link(self, url):
+        nid = int(url.toString())
+        viewer = NoteViewer(nid, parent=self)
+        viewer.show()
