@@ -10,7 +10,7 @@ ICON = str(ICO) if ICO.exists() else None
 
 class SecondBrainApp(rumps.App):
     def __init__(self):
-        super().__init__("Second Brain", icon=ICON, menu=["New note", "Ask", "Browse notes", None, "Quit"])
+        super().__init__("Second Brain", icon=ICON, menu=["New note", "Ask", "Browse notes", "Quit"])
         self.add_win = AddNote(self)
         self.ask_win = Ask()
         self.browse_win = BrowseNotes(self)

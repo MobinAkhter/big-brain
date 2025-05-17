@@ -1,3 +1,4 @@
+# brain/storage.py
 import sqlite3
 import time
 import pathlib
@@ -75,7 +76,7 @@ def _ensure_index(dim: int):
         _DIM = dim
         idx = hnswlib.Index(space="ip", dim=_DIM)
         idx.init_index(max_elements=100_000, ef_construction=200, M=32)
-        idx.set_ef(100)  # Fixed: Changed from idx/accounts/100 to idx.set_ef(100)
+        idx.set_ef(100)
         rows = get_conn().execute("SELECT id, emb FROM notes WHERE emb IS NOT NULL").fetchall()
         for nid, blob in rows:
             if isinstance(blob, (bytes, bytearray)) and len(blob) == _DIM * 4:
@@ -143,12 +144,27 @@ def _embed(text: str) -> np.ndarray:
     return np.array(embed(normalized_text), dtype="float32")
 
 @lru_cache(maxsize=64)
-def topk(query: str, k: int = 4):
+def topk(query: str, k: int = 4, tags: str = None, date_start: float = None, date_end: float = None):
     normalized_query = _normalize(query)
-    fts_query = ' '.join([f"{word}*" for word in normalized_query.split()])  # Enable prefix matching for fuzziness
+    fts_query = ' '.join([f"{word}*" for word in normalized_query.split()]) if query else ''
+
+    # Build SQL query for filtering
+    conditions = []
+    params = []
+    if tags:
+        tag_list = [tag.strip().lower() for tag in tags.split(',') if tag.strip()]
+        if tag_list:
+            conditions.append(" AND ".join("LOWER(tags) LIKE ?" for _ in tag_list))
+            params.extend([f"%{tag}%" for tag in tag_list])
+    if date_start is not None:
+        conditions.append("ts >= ?")
+        params.append(date_start)
+    if date_end is not None:
+        conditions.append("ts <= ?")
+        params.append(date_end)
 
     emb_results = {}
-    if _index is not None and _index.get_current_count() > 0:
+    if _index is not None and _index.get_current_count() > 0 and query:
         try:
             vec = _embed(query)
             if vec.size == _DIM:
@@ -168,13 +184,21 @@ def topk(query: str, k: int = 4):
 
     fts_results = {}
     if fts_query:
-        fts_rows = get_conn().execute(
-            "SELECT rowid, rank FROM notes_fts WHERE notes_fts MATCH ? ORDER BY rank LIMIT ?",
-            (fts_query, k)
-        ).fetchall()
+        fts_conditions = conditions[:]
+        fts_params = params[:]
+        fts_conditions.insert(0, "notes_fts MATCH ?")
+        fts_params.insert(0, fts_query)
+        where_clause = " WHERE " + " AND ".join(fts_conditions) if fts_conditions else ""
+        query = f"""
+            SELECT rowid, rank FROM notes_fts
+            JOIN notes ON notes_fts.rowid = notes.id
+            {where_clause}
+            ORDER BY rank LIMIT ?
+        """
+        fts_rows = get_conn().execute(query, fts_params + [k]).fetchall()
         if fts_rows:
             rowids, ranks = zip(*fts_rows)
-            similarities = -np.array(ranks)  # Higher is better (more negative rank is better match)
+            similarities = -np.array(ranks)
             min_sim = np.min(similarities)
             max_sim = np.max(similarities)
             if max_sim > min_sim:
@@ -184,6 +208,15 @@ def topk(query: str, k: int = 4):
             fts_results = {int(rowid): score for rowid, score in zip(rowids, sim_fts_norm)}
 
     all_ids = set(emb_results.keys()).union(set(fts_results.keys()))
+    if not query and not all_ids:
+        # If no query, return filtered notes without ranking
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = get_conn().execute(
+            f"SELECT id, body FROM notes{where_clause}",
+            params
+        ).fetchall()
+        return rows[:k]
+
     if not all_ids:
         return []
 
@@ -194,7 +227,6 @@ def topk(query: str, k: int = 4):
         scores[nid] = emb_score + fts_score
 
     sorted_ids = sorted(all_ids, key=lambda x: scores[x], reverse=True)
-
     placeholders = ','.join('?' * len(sorted_ids))
     rows = get_conn().execute(
         f"SELECT id, body FROM notes WHERE id IN ({placeholders})",
@@ -203,8 +235,30 @@ def topk(query: str, k: int = 4):
 
     id_to_row = {row[0]: row for row in rows}
     sorted_rows = [id_to_row[nid] for nid in sorted_ids if nid in id_to_row]
-
     return sorted_rows[:k]
+
+def filter_notes(text: str = None, tags: str = None, date_start: float = None, date_end: float = None):
+    conditions = []
+    params = []
+    if text:
+        conditions.append("LOWER(body) LIKE ?")
+        params.append(f"%{text.lower()}%")
+    if tags:
+        tag_list = [tag.strip().lower() for tag in tags.split(',') if tag.strip()]
+        if tag_list:
+            conditions.append(" AND ".join("LOWER(tags) LIKE ?" for _ in tag_list))
+            params.extend([f"%{tag}%" for tag in tag_list])
+    if date_start is not None:
+        conditions.append("ts >= ?")
+        params.append(date_start)
+    if date_end is not None:
+        conditions.append("ts <= ?")
+        params.append(date_end)
+    where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+    return get_conn().execute(
+        f"SELECT id, parent_id, ts, body, tags FROM notes{where_clause} ORDER BY ts DESC",
+        params
+    ).fetchall()
 
 def all_notes():
     return get_conn().execute("SELECT id, parent_id, ts, body, tags FROM notes ORDER BY ts DESC").fetchall()
