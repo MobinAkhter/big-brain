@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QKeySequence
 
-from .storage import add, topk, all_notes, delete, get_note, update_note, export_notes
+from .storage import add, topk, all_notes, delete, get_note, update_note, export_notes, DB
 from .llm import chat
 
 
@@ -287,8 +287,8 @@ class BrowseNotes(QWidget):
 
     def _edit(self, nid):
         editor = EditNote(self.tray, nid)
+        editor.destroyed.connect(self.refresh)  # Fixed: Use destroyed signal instead of closed
         editor.show()
-        editor.closed.connect(self.refresh)  # Refresh table after editing
 
     def _export(self):
         options = QFileDialog.Options()
@@ -302,12 +302,20 @@ class BrowseNotes(QWidget):
         if file_name:
             if selected_filter == "SQLite Database (*.db)":
                 shutil.copy(str(DB), file_name)
-                self.tray.showMessage("Second Brain", "Database backed up ✔", QSystemTrayIcon.Information, 2000)
+                if hasattr(self.tray, "showMessage"):
+                    self.tray.showMessage("Second Brain", "Database backed up ✔", QSystemTrayIcon.Information, 2000)
+                else:
+                    import rumps
+                    rumps.notification("Second Brain", "", "Database backed up ✔")
             elif selected_filter == "JSON File (*.json)":
                 notes = export_notes()
                 with open(file_name, 'w') as f:
                     json.dump(notes, f, indent=2)
-                self.tray.showMessage("Second Brain", "Notes exported to JSON ✔", QSystemTrayIcon.Information, 2000)
+                if hasattr(self.tray, "showMessage"):
+                    self.tray.showMessage("Second Brain", "Notes exported to JSON ✔", QSystemTrayIcon.Information, 2000)
+                else:
+                    import rumps
+                    rumps.notification("Second Brain", "", "Notes exported to JSON ✔")
 
 
 class NoteViewer(QDialog):

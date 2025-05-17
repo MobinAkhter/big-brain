@@ -75,7 +75,7 @@ def _ensure_index(dim: int):
         _DIM = dim
         idx = hnswlib.Index(space="ip", dim=_DIM)
         idx.init_index(max_elements=100_000, ef_construction=200, M=32)
-        idx/accounts/100
+        idx.set_ef(100)  # Fixed: Changed from idx/accounts/100 to idx.set_ef(100)
         rows = get_conn().execute("SELECT id, emb FROM notes WHERE emb IS NOT NULL").fetchall()
         for nid, blob in rows:
             if isinstance(blob, (bytes, bytearray)) and len(blob) == _DIM * 4:
