@@ -7,6 +7,7 @@ import hnswlib
 import re
 import threading
 from functools import lru_cache
+from llm import embed  # Absolute import at the top
 
 HOME = pathlib.Path.home()
 APP = HOME / ".second-brain"
@@ -28,7 +29,8 @@ get_conn().execute(
     "body TEXT NOT NULL,"
     "ts REAL NOT NULL,"
     "emb BLOB,"
-    "tags TEXT DEFAULT '')"
+    "tags TEXT DEFAULT '',"
+    "is_favorite INTEGER DEFAULT 0)"
 )
 
 get_conn().execute("CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(body, content='notes', content_rowid='id')")
@@ -60,12 +62,14 @@ END;
 if get_conn().execute("SELECT COUNT(*) FROM notes_fts").fetchone()[0] == 0:
     get_conn().execute("INSERT INTO notes_fts(rowid, body) SELECT id, body FROM notes")
 
-# Ensure 'tags' column exists (for backward compatibility)
+# Ensure 'tags' and 'is_favorite' columns exist
 cursor = get_conn().execute("PRAGMA table_info(notes)")
 columns = [row[1] for row in cursor.fetchall()]
 if 'tags' not in columns:
     get_conn().execute("ALTER TABLE notes ADD COLUMN tags TEXT DEFAULT ''")
-    get_conn().commit()
+if 'is_favorite' not in columns:
+    get_conn().execute("ALTER TABLE notes ADD COLUMN is_favorite INTEGER DEFAULT 0")
+get_conn().commit()
 
 _index = None
 _DIM = 0
@@ -98,7 +102,6 @@ def _chunk(text, max_words=100):
             yield " ".join(words[i:i + max_words])
 
 def add(body: str, tags: str = ""):
-    from .llm import embed
     ts = time.time()
     parent = None
     for chunk in _chunk(body):
@@ -109,7 +112,7 @@ def add(body: str, tags: str = ""):
         _ensure_index(vec.size)
         blob = vec.tobytes()
         cur = get_conn().execute(
-            "INSERT INTO notes(parent_id, body, ts, emb, tags) VALUES(?,?,?,?,?)",
+            "INSERT INTO notes(parent_id, body, ts, emb, tags, is_favorite) VALUES(?,?,?,?,?,0)",
             (parent, chunk, ts, blob, tags))
         nid = cur.lastrowid
         if parent is None:
@@ -118,7 +121,6 @@ def add(body: str, tags: str = ""):
         _index.add_items(vec.reshape(1, -1), [nid])
 
 def update_note(nid: int, body: str, tags: str = ""):
-    from .llm import embed
     ts = time.time()
     normalized_body = _normalize(body)
     vec = np.array(embed(normalized_body), dtype="float32")
@@ -134,12 +136,11 @@ def update_note(nid: int, body: str, tags: str = ""):
         _index.add_items(vec.reshape(1, -1), [nid])
 
 def get_note(nid):
-    row = get_conn().execute("SELECT body, tags FROM notes WHERE id=?", (nid,)).fetchone()
-    return {"body": row[0], "tags": row[1]} if row else None
+    row = get_conn().execute("SELECT body, tags, is_favorite FROM notes WHERE id=?", (nid,)).fetchone()
+    return {"body": row[0], "tags": row[1], "is_favorite": bool(row[2])} if row else None
 
 @lru_cache(maxsize=128)
 def _embed(text: str) -> np.ndarray:
-    from .llm import embed
     normalized_text = _normalize(text)
     return np.array(embed(normalized_text), dtype="float32")
 
@@ -148,7 +149,6 @@ def topk(query: str, k: int = 4, tags: str = None, date_start: float = None, dat
     normalized_query = _normalize(query)
     fts_query = ' '.join([f"{word}*" for word in normalized_query.split()]) if query else ''
 
-    # Build SQL query for filtering
     conditions = []
     params = []
     if tags:
@@ -170,7 +170,7 @@ def topk(query: str, k: int = 4, tags: str = None, date_start: float = None, dat
             if vec.size == _DIM:
                 k_emb = min(k, _index.get_current_count())
                 labels, distances = _index.knn_query(vec, k=k_emb)
-                similarities = -distances[0]  # Higher is better for inner product
+                similarities = -distances[0]
                 if len(similarities) > 0:
                     min_sim = np.min(similarities)
                     max_sim = np.max(similarities)
@@ -190,7 +190,7 @@ def topk(query: str, k: int = 4, tags: str = None, date_start: float = None, dat
         fts_params.insert(0, fts_query)
         where_clause = " WHERE " + " AND ".join(fts_conditions) if fts_conditions else ""
         query = f"""
-            SELECT rowid, rank FROM notes_fts
+            SELECT notes_fts.rowid, rank FROM notes_fts
             JOIN notes ON notes_fts.rowid = notes.id
             {where_clause}
             ORDER BY rank LIMIT ?
@@ -209,7 +209,6 @@ def topk(query: str, k: int = 4, tags: str = None, date_start: float = None, dat
 
     all_ids = set(emb_results.keys()).union(set(fts_results.keys()))
     if not query and not all_ids:
-        # If no query, return filtered notes without ranking
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
         rows = get_conn().execute(
             f"SELECT id, body FROM notes{where_clause}",
@@ -256,12 +255,34 @@ def filter_notes(text: str = None, tags: str = None, date_start: float = None, d
         params.append(date_end)
     where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
     return get_conn().execute(
-        f"SELECT id, parent_id, ts, body, tags FROM notes{where_clause} ORDER BY ts DESC",
+        f"SELECT id, parent_id, ts, body, tags, is_favorite FROM notes{where_clause} ORDER BY ts DESC",
         params
     ).fetchall()
 
+def get_recent_notes(limit: int = 10):
+    return get_conn().execute(
+        "SELECT id, parent_id, ts, body, tags, is_favorite FROM notes ORDER BY ts DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+
+def get_favorite_notes():
+    return get_conn().execute(
+        "SELECT id, parent_id, ts, body, tags, is_favorite FROM notes WHERE is_favorite = 1 ORDER BY ts DESC"
+    ).fetchall()
+
+def toggle_favorite(nid: int) -> bool:
+    current = get_conn().execute("SELECT is_favorite FROM notes WHERE id=?", (nid,)).fetchone()
+    if current is None:
+        return False
+    new_value = 0 if current[0] else 1
+    get_conn().execute("UPDATE notes SET is_favorite=? WHERE id=?", (new_value, nid))
+    get_conn().commit()
+    return bool(new_value)
+
 def all_notes():
-    return get_conn().execute("SELECT id, parent_id, ts, body, tags FROM notes ORDER BY ts DESC").fetchall()
+    return get_conn().execute(
+        "SELECT id, parent_id, ts, body, tags, is_favorite FROM notes ORDER BY ts DESC"
+    ).fetchall()
 
 def delete(nid: int):
     if _index:
@@ -270,8 +291,8 @@ def delete(nid: int):
     get_conn().commit()
 
 def export_notes():
-    rows = get_conn().execute("SELECT id, parent_id, ts, body, tags FROM notes").fetchall()
+    rows = get_conn().execute("SELECT id, parent_id, ts, body, tags, is_favorite FROM notes").fetchall()
     return [
-        {"id": nid, "parent_id": pid, "timestamp": ts, "body": body, "tags": tags}
-        for nid, pid, ts, body, tags in rows
+        {"id": nid, "parent_id": pid, "timestamp": ts, "body": body, "tags": tags, "is_favorite": bool(is_fav)}
+        for nid, pid, ts, body, tags, is_fav in rows
     ]

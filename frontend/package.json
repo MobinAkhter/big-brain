@@ -1,0 +1,34 @@
+{
+  "name": "second-brain-electron",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^latest",
+    "electron-builder": "^latest",
+    "tailwindcss": "^3.4.0"
+  },
+  "build": {
+    "appId": "com.secondbrain.app",
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "files": [
+      "dist/backend",
+      "main.js",
+      "index.html",
+      "tailwind.config.js"
+    ],
+    "extraFiles": [
+      {
+        "from": "../brain",
+        "to": "brain",
+        "filter": ["**/*"]
+      }
+    ]
+  }
+}
